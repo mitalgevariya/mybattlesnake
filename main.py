@@ -143,6 +143,10 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
         hunt_score = evaluate_hunting(new_head, my_length, opponents, board_width, board_height)
         score += hunt_score * 3.0
 
+        # Try to block and control opponents
+        blocking_score = evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height)
+        score += blocking_score * 2.0
+
         # Still look for food opportunistically but with lower priority
         if food:
             food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
@@ -152,9 +156,9 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
         score += food_score * 2.0
 
-    # Factor 5: Space control and avoid traps
-    space_score = evaluate_space(new_head, my_body, opponents, board_width, board_height)
-    score += space_score
+    # Factor 5: Enhanced space control - prefer less cramped areas
+    space_score = evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height)
+    score += space_score * 2.5  # Increased importance
 
     # Factor 6: Board position (prefer center slightly)
     position_score = evaluate_position(new_head, board_width, board_height)
@@ -309,9 +313,103 @@ def evaluate_hunting(new_head, my_length, opponents, board_width, board_height):
     return score
 
 
+def evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height):
+    """
+    Block opponents' escape routes when we're healthy and strong
+    """
+    score = 0.0
+
+    # Only block if we have sufficient health to sustain the strategy
+    if my_health < 30:
+        return 0.0
+
+    for opponent in opponents:
+        opponent_head = opponent["head"]
+        opponent_length = len(opponent["body"])
+
+        # Get opponent's available moves
+        opp_possible_moves = get_possible_moves(opponent_head, board_width, board_height)
+
+        # Check if we can block any of their escape routes
+        for opp_move in opp_possible_moves:
+            distance_to_their_move = get_distance(new_head, opp_move)
+
+            # If we're adjacent to where they might move
+            if distance_to_their_move <= 1:
+                if my_length > opponent_length:
+                    # We're bigger, blocking is good - cut off their options
+                    score += 20.0
+                elif my_length == opponent_length:
+                    # Equal size, moderate blocking value
+                    score += 5.0
+
+        # Extra points for positioning between opponent and open space
+        opponent_space = count_reachable_space(opponent_head, opponent["body"], opponents,
+                                               board_width, board_height, my_length)
+        if opponent_space < 15:  # They're already cramped
+            distance = get_distance(new_head, opponent_head)
+            if distance <= 2 and my_length > opponent_length:
+                # Move closer to trap them further
+                score += 15.0
+
+    return score
+
+
+def count_reachable_space(start_pos, own_body, opponents, board_width, board_height, exclude_length):
+    """
+    Count how much space is reachable from a position (for blocking evaluation)
+    """
+    accessible = 0
+    max_check = 6
+    visited = set()
+    queue = [(start_pos["x"], start_pos["y"], 0)]
+
+    while queue:
+        x, y, depth = queue.pop(0)
+
+        if depth >= max_check:
+            continue
+
+        if (x, y) in visited:
+            continue
+
+        if x < 0 or x >= board_width or y < 0 or y >= board_height:
+            continue
+
+        # Check if occupied
+        occupied = False
+        for segment in own_body[:-1]:
+            if x == segment["x"] and y == segment["y"]:
+                occupied = True
+                break
+
+        if not occupied:
+            for opponent in opponents:
+                if len(opponent["body"]) == exclude_length:
+                    continue  # Skip the snake we're measuring for
+                for segment in opponent["body"][:-1]:
+                    if x == segment["x"] and y == segment["y"]:
+                        occupied = True
+                        break
+
+        if occupied:
+            continue
+
+        visited.add((x, y))
+        accessible += 1
+
+        queue.append((x + 1, y, depth + 1))
+        queue.append((x - 1, y, depth + 1))
+        queue.append((x, y + 1, depth + 1))
+        queue.append((x, y - 1, depth + 1))
+
+    return accessible
+
+
 def evaluate_space(new_head, my_body, opponents, board_width, board_height):
     """
-    Flood fill to check available space (avoid traps)
+    Flood fill to check available space (avoid traps) - DEPRECATED
+    Use evaluate_space_advanced instead
     """
     # Simple space check: count accessible squares within small radius
     accessible = 0
@@ -360,6 +458,102 @@ def evaluate_space(new_head, my_body, opponents, board_width, board_height):
 
     # More space = better
     return accessible * 2
+
+
+def evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height):
+    """
+    Advanced space evaluation - prefer open areas with multiple escape routes
+    """
+    # Multi-depth flood fill to evaluate both immediate and future space
+    immediate_space = 0  # 1-2 moves away
+    extended_space = 0   # 3-6 moves away
+    max_immediate = 3
+    max_extended = 7
+
+    visited = set()
+    queue = [(new_head["x"], new_head["y"], 0)]
+
+    while queue:
+        x, y, depth = queue.pop(0)
+
+        if depth >= max_extended:
+            continue
+
+        if (x, y) in visited:
+            continue
+
+        if x < 0 or x >= board_width or y < 0 or y >= board_height:
+            continue
+
+        # Check if occupied by snakes
+        occupied = False
+        for segment in my_body[:-1]:
+            if x == segment["x"] and y == segment["y"]:
+                occupied = True
+                break
+
+        if not occupied:
+            for opponent in opponents:
+                for segment in opponent["body"][:-1]:
+                    if x == segment["x"] and y == segment["y"]:
+                        occupied = True
+                        break
+
+        if occupied:
+            continue
+
+        visited.add((x, y))
+
+        # Weight closer spaces more heavily
+        if depth < max_immediate:
+            immediate_space += 1
+        else:
+            extended_space += 1
+
+        # Add neighbors
+        queue.append((x + 1, y, depth + 1))
+        queue.append((x - 1, y, depth + 1))
+        queue.append((x, y + 1, depth + 1))
+        queue.append((x, y - 1, depth + 1))
+
+    # Calculate open directions (multiple escape routes)
+    open_directions = 0
+    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        check_x = new_head["x"] + dx
+        check_y = new_head["y"] + dy
+
+        if 0 <= check_x < board_width and 0 <= check_y < board_height:
+            occupied = False
+            for segment in my_body[:-1]:
+                if check_x == segment["x"] and check_y == segment["y"]:
+                    occupied = True
+                    break
+
+            if not occupied:
+                for opponent in opponents:
+                    for segment in opponent["body"][:-1]:
+                        if check_x == segment["x"] and check_y == segment["y"]:
+                            occupied = True
+                            break
+
+            if not occupied:
+                open_directions += 1
+
+    # Scoring formula:
+    # - Immediate space is critical (nearby freedom)
+    # - Extended space matters for long-term planning
+    # - Multiple open directions = less cramped (bonus)
+    score = (immediate_space * 4.0) + (extended_space * 1.5) + (open_directions * 8.0)
+
+    # Penalty for being too cramped (< 2 directions)
+    if open_directions < 2:
+        score -= 20.0
+
+    # Bonus for having many options (3-4 directions)
+    if open_directions >= 3:
+        score += 15.0
+
+    return score
 
 
 def evaluate_position(new_head, board_width, board_height):
