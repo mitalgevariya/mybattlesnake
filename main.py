@@ -1,12 +1,8 @@
 import os
 import random
 from flask import Flask, request, jsonify
-from collections import deque
 
 app = Flask(__name__)
-
-# Cache for board center calculations
-_board_center_cache = {}
 
 
 @app.route("/")
@@ -177,64 +173,83 @@ def validate_move_against_opponents(chosen_head, my_length, opponents, board_wid
 def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
                   opponents, food, board_width, board_height):
     """
-    Optimized move scoring with balanced strategic factors
+    Score a move based on multiple strategic factors
     """
     score = 0.0
 
-    # Factor 1: Straight line movement (save health)
-    if len(my_body) >= 2 and is_straight_line(my_body, move):
-        score += 6.0
+    # Factor 1: Straight line movement bonus (save health - critical!)
+    if is_straight_line(my_body, move):
+        score += 8.0  # Strong preference to continue straight
 
-    # Factor 2: Collision avoidance (instant fail)
-    if check_opponent_bodies(new_head, opponents):
-        return -1000.0
-
-    # Pre-calculate opponent size comparisons (optimize repeated checks)
-    if opponents:
-        opp_sizes = [len(opp["body"]) for opp in opponents]
-        all_bigger = all(size > my_length for size in opp_sizes)
-        any_smaller = any(size < my_length for size in opp_sizes)
-    else:
-        all_bigger = False
-        any_smaller = False
+    # Factor 2: Avoid opponent bodies
+    body_danger = check_opponent_bodies(new_head, opponents)
+    if body_danger:
+        return -1000.0  # Instant death
 
     # Factor 3: Head-to-head collision strategy
     head_score = evaluate_head_to_head(new_head, my_length, opponents, board_width, board_height)
     score += head_score
 
-    # Factor 4: Adaptive strategy (streamlined)
+    # Factor 4: Dynamic strategy based on size and health
+    # Check if we're the underdog (all opponents are bigger)
+    all_opponents_bigger = all(len(opp["body"]) > my_length for opp in opponents) if opponents else False
+    any_smaller_opponent = any(len(opp["body"]) < my_length for opp in opponents) if opponents else False
+
     if my_health < 15:
-        # CRITICAL: Food only
-        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 4.5
-    elif all_bigger:
-        # UNDERDOG: Growth focus
-        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 3.5
+        # Critical health: MUST get food NOW regardless of size
+        food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+        score += food_score * 5.0  # Extremely high priority
+    elif all_opponents_bigger:
+        # UNDERDOG MODE: Focus on growth to catch up
         if my_health >= 20:
-            score += evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height) * 2.0
-    elif my_health >= 20 and any_smaller:
-        # DOMINANT: Hunt and control
-        score += evaluate_hunting(new_head, my_length, opponents, board_width, board_height) * 2.5
-        score += evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height) * 1.5
+            # Healthy underdog: aggressive growth strategy
+            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+            score += food_score * 4.0  # Very high priority - need to grow!
+
+            # Avoid larger snakes while growing
+            avoidance_score = evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height)
+            score += avoidance_score * 2.5
+        else:
+            # Low health underdog: careful growth
+            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+            score += food_score * 3.0
+    elif my_health >= 20 and any_smaller_opponent:
+        # DOMINANT MODE: Enough health and we're competitive or larger
+        hunt_score = evaluate_hunting(new_head, my_length, opponents, board_width, board_height)
+        score += hunt_score * 3.0
+
+        # Try to block and control opponents
+        blocking_score = evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height)
+        score += blocking_score * 2.0
+
+        # Still look for food opportunistically but with lower priority
         if food:
-            score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 0.4
+            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+            score += food_score * 0.5  # Low priority, only if convenient
     else:
-        # SURVIVAL: Balanced
-        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 2.0
+        # SURVIVAL MODE: Low health (15-19) or equal size competition
+        food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+        score += food_score * 2.0
 
-    # Factor 5: Space control (critical for survival)
+    # Factor 5: Enhanced space control - prefer less cramped areas
     space_score = evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height)
-    score += space_score * 2.0
+    score += space_score * 2.5  # Increased importance
 
+<<<<<<< HEAD
     # Factor 6: Center control (only when healthy and long enough)
     if my_health >= 25 and my_length >= 5:
         center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height, opponents)
         score += center_score * 2.0
+=======
+    # Factor 6: Center control and territorial dominance
+    center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height)
+    score += center_score * 3.0  # High priority for center control
+>>>>>>> parent of 1d3b9e3 (Optimize code performance and balance strategies)
 
-    # Factor 7: Area coverage (only when dominant)
-    if my_health >= 30 and my_length >= 8:
-        coverage_score = evaluate_area_coverage(new_head, my_body, my_length, my_health,
-                                                opponents, board_width, board_height)
-        score += coverage_score * 1.5
+    # Factor 7: Area coverage - use body to block maximum area
+    coverage_score = evaluate_area_coverage(new_head, my_body, my_length, my_health,
+                                            opponents, board_width, board_height)
+    score += coverage_score * 2.0
 
     return score
 
@@ -264,13 +279,12 @@ def is_straight_line(body, move):
 
 def check_opponent_bodies(new_head, opponents):
     """
-    Optimized: Check if move hits any opponent body
+    Check if move hits any opponent body
     """
-    new_pos = (new_head["x"], new_head["y"])
     for opponent in opponents:
         # Check all body segments except tail (it will move)
         for segment in opponent["body"][:-1]:
-            if (segment["x"], segment["y"]) == new_pos:
+            if new_head["x"] == segment["x"] and new_head["y"] == segment["y"]:
                 return True
     return False
 
@@ -469,10 +483,10 @@ def count_reachable_space(start_pos, own_body, opponents, board_width, board_hei
     accessible = 0
     max_check = 6
     visited = set()
-    queue = deque([(start_pos["x"], start_pos["y"], 0)])
+    queue = [(start_pos["x"], start_pos["y"], 0)]
 
     while queue:
-        x, y, depth = queue.popleft()
+        x, y, depth = queue.pop(0)
 
         if depth >= max_check:
             continue
@@ -523,10 +537,10 @@ def evaluate_space(new_head, my_body, opponents, board_width, board_height):
     max_check = 4
 
     visited = set()
-    queue = deque([(new_head["x"], new_head["y"], 0)])
+    queue = [(new_head["x"], new_head["y"], 0)]
 
     while queue:
-        x, y, depth = queue.popleft()
+        x, y, depth = queue.pop(0)
 
         if depth >= max_check:
             continue
@@ -578,10 +592,10 @@ def evaluate_space_advanced(new_head, my_body, opponents, board_width, board_hei
     max_extended = 7
 
     visited = set()
-    queue = deque([(new_head["x"], new_head["y"], 0)])
+    queue = [(new_head["x"], new_head["y"], 0)]
 
     while queue:
-        x, y, depth = queue.popleft()
+        x, y, depth = queue.pop(0)
 
         if depth >= max_extended:
             continue
