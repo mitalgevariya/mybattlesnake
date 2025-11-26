@@ -82,9 +82,36 @@ def move():
         # Choose highest scoring move
         chosen_move = max(move_scores, key=move_scores.get)
 
+        # Step 3: FINAL SAFETY CHECK - Validate chosen move against opponent threats
+        chosen_head = get_new_head_position(my_head, chosen_move)
+        is_safe_from_larger = validate_move_against_opponents(
+            chosen_head, my_length, opponents, board_width, board_height
+        )
+
+        if not is_safe_from_larger:
+            # Chosen move is dangerous! Find alternative
+            print(f"⚠️ Move {chosen_move} blocked by larger/equal snake! Re-evaluating...")
+
+            # Remove the dangerous move and try alternatives
+            safe_alternatives = []
+            for alt_move, alt_score in sorted(move_scores.items(), key=lambda x: x[1], reverse=True):
+                if alt_move == chosen_move:
+                    continue
+                alt_head = get_new_head_position(my_head, alt_move)
+                if validate_move_against_opponents(alt_head, my_length, opponents, board_width, board_height):
+                    safe_alternatives.append((alt_move, alt_score))
+
+            if safe_alternatives:
+                # Choose best safe alternative
+                chosen_move = safe_alternatives[0][0]
+                print(f"✅ Switching to safer move: {chosen_move}")
+            else:
+                # No safe alternatives, keep original (might lose but try)
+                print(f"⚠️ No safe alternatives! Proceeding with {chosen_move} anyway")
+
         # Log strategy
         strategy = determine_strategy(my_health, my_length, opponents, food)
-        print(f"🎯 {strategy}: {chosen_move} (score: {move_scores[chosen_move]:.2f}, health: {my_health})")
+        print(f"🎯 {strategy}: {chosen_move} (score: {move_scores.get(chosen_move, 0):.2f}, health: {my_health})")
 
     return jsonify({"move": chosen_move})
 
@@ -115,6 +142,36 @@ def is_basic_safe(new_head, board_width, board_height, my_body):
             return False
 
     return True
+
+
+def validate_move_against_opponents(chosen_head, my_length, opponents, board_width, board_height):
+    """
+    FINAL SAFETY VALIDATION: Check if any equal/larger opponent can reach this position
+    Returns True if safe, False if dangerous
+    """
+    if not opponents:
+        return True  # No opponents, always safe
+
+    chosen_pos = (chosen_head["x"], chosen_head["y"])
+
+    for opponent in opponents:
+        opponent_head = opponent["head"]
+        opponent_length = len(opponent["body"])
+
+        # Only worry about equal or larger snakes
+        if opponent_length < my_length:
+            continue
+
+        # Get all possible next positions for this opponent
+        opponent_possible_moves = get_possible_moves(opponent_head, board_width, board_height)
+
+        # Check if opponent can reach our chosen position
+        for opp_next_pos in opponent_possible_moves:
+            if (opp_next_pos["x"], opp_next_pos["y"]) == chosen_pos:
+                # DANGER! Equal or larger opponent can move here
+                return False
+
+    return True  # No equal/larger opponents can reach this position
 
 
 def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
