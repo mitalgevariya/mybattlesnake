@@ -120,9 +120,9 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
     """
     score = 0.0
 
-    # Factor 1: Straight line movement bonus (save health)
+    # Factor 1: Straight line movement bonus (save health - critical!)
     if is_straight_line(my_body, move):
-        score += 5.0
+        score += 8.0  # Strong preference to continue straight
 
     # Factor 2: Avoid opponent bodies
     body_danger = check_opponent_bodies(new_head, opponents)
@@ -134,18 +134,23 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
     score += head_score
 
     # Factor 4: Food strategy based on health
-    if my_health < 40:
-        # Low health: prioritize food aggressively
+    if my_health < 15:
+        # Critical health: MUST get food NOW
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
-        score += food_score * 3.0
-    elif my_health > 70 and opponents:
-        # High health: hunt weaker snakes
+        score += food_score * 5.0  # Extremely high priority
+    elif my_health >= 20 and opponents:
+        # Enough health: hunt weaker snakes aggressively
         hunt_score = evaluate_hunting(new_head, my_length, opponents, board_width, board_height)
-        score += hunt_score * 2.0
+        score += hunt_score * 3.0
+
+        # Still look for food opportunistically but with lower priority
+        if food:
+            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+            score += food_score * 0.5  # Low priority, only if convenient
     else:
-        # Medium health: balance food and positioning
+        # Low health (15-19): careful food seeking while conserving health
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
-        score += food_score * 1.5
+        score += food_score * 2.0
 
     # Factor 5: Space control and avoid traps
     space_score = evaluate_space(new_head, my_body, opponents, board_width, board_height)
@@ -230,33 +235,53 @@ def evaluate_head_to_head(new_head, my_length, opponents, board_width, board_hei
 
 def evaluate_food_seeking(new_head, my_head, food, opponents, my_length):
     """
-    Smart food seeking that avoids opponent interference
+    Smart food seeking that avoids opponent interference and minimizes moves
     """
     if not food:
         return 0.0
 
     score = 0.0
 
-    # Find nearest food
+    # Find nearest accessible food
     nearest_food = min(food, key=lambda f: get_distance(my_head, f))
     distance_to_food = get_distance(new_head, nearest_food)
     current_distance = get_distance(my_head, nearest_food)
 
     # Reward moving closer to food
     if distance_to_food < current_distance:
-        score += 20.0
-        # Bonus for being very close
-        if distance_to_food <= 1:
-            score += 30.0
+        score += 25.0
+        # Extra bonus for direct path (Manhattan distance decreases by 1)
+        if current_distance - distance_to_food == 1:
+            score += 10.0  # Reward efficient straight path
+        # Huge bonus for being very close
+        if distance_to_food == 0:
+            score += 100.0  # About to eat!
+        elif distance_to_food == 1:
+            score += 40.0
     elif distance_to_food > current_distance:
-        score -= 5.0
+        score -= 10.0  # Penalty for moving away
 
     # Check if opponent is closer to this food
+    contested = False
     for opponent in opponents:
         opp_distance = get_distance(opponent["head"], nearest_food)
-        if opp_distance < distance_to_food and len(opponent["body"]) >= my_length:
-            # Larger opponent is closer, look for different food
-            score -= 15.0
+        if opp_distance < distance_to_food:
+            if len(opponent["body"]) >= my_length:
+                # Larger opponent is closer, look for different food
+                score -= 20.0
+                contested = True
+            elif len(opponent["body"]) < my_length:
+                # Smaller opponent is closer, we can fight for it
+                score -= 5.0
+
+    # If food is contested, try to find alternative food
+    if contested and len(food) > 1:
+        other_foods = [f for f in food if f != nearest_food]
+        if other_foods:
+            alt_food = min(other_foods, key=lambda f: get_distance(my_head, f))
+            alt_distance = get_distance(new_head, alt_food)
+            if alt_distance < get_distance(my_head, alt_food):
+                score += 15.0  # Bonus for moving toward uncontested food
 
     return score
 
@@ -355,14 +380,16 @@ def determine_strategy(my_health, my_length, opponents, food):
     """
     Determine current strategy for logging
     """
-    if my_health < 40:
-        return "🍎 FOOD SEEKING"
-    elif my_health > 70 and opponents and any(len(o["body"]) < my_length for o in opponents):
-        return "⚔️ HUNTING"
+    if my_health < 15:
+        return "🚨 CRITICAL - FOOD NOW"
+    elif my_health >= 20 and opponents and any(len(o["body"]) < my_length for o in opponents):
+        return "⚔️ HUNTING MODE"
+    elif my_health < 20:
+        return "🍎 SURVIVAL MODE"
     elif not opponents:
         return "👑 DOMINATING"
     else:
-        return "🎮 BALANCED"
+        return "🎮 EFFICIENT PLAY"
 
 
 def get_new_head_position(head, move):
