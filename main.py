@@ -133,13 +133,31 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
     head_score = evaluate_head_to_head(new_head, my_length, opponents, board_width, board_height)
     score += head_score
 
-    # Factor 4: Food strategy based on health
+    # Factor 4: Dynamic strategy based on size and health
+    # Check if we're the underdog (all opponents are bigger)
+    all_opponents_bigger = all(len(opp["body"]) > my_length for opp in opponents) if opponents else False
+    any_smaller_opponent = any(len(opp["body"]) < my_length for opp in opponents) if opponents else False
+
     if my_health < 15:
-        # Critical health: MUST get food NOW
+        # Critical health: MUST get food NOW regardless of size
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
         score += food_score * 5.0  # Extremely high priority
-    elif my_health >= 20 and opponents:
-        # Enough health: hunt weaker snakes aggressively
+    elif all_opponents_bigger:
+        # UNDERDOG MODE: Focus on growth to catch up
+        if my_health >= 20:
+            # Healthy underdog: aggressive growth strategy
+            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+            score += food_score * 4.0  # Very high priority - need to grow!
+
+            # Avoid larger snakes while growing
+            avoidance_score = evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height)
+            score += avoidance_score * 2.5
+        else:
+            # Low health underdog: careful growth
+            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
+            score += food_score * 3.0
+    elif my_health >= 20 and any_smaller_opponent:
+        # DOMINANT MODE: Enough health and we're competitive or larger
         hunt_score = evaluate_hunting(new_head, my_length, opponents, board_width, board_height)
         score += hunt_score * 3.0
 
@@ -152,7 +170,7 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
             food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
             score += food_score * 0.5  # Low priority, only if convenient
     else:
-        # Low health (15-19): careful food seeking while conserving health
+        # SURVIVAL MODE: Low health (15-19) or equal size competition
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
         score += food_score * 2.0
 
@@ -309,6 +327,40 @@ def evaluate_hunting(new_head, my_length, opponents, board_width, board_height):
                 score += (4 - distance) * 15
             elif distance <= 5:
                 score += (6 - distance) * 5
+
+    return score
+
+
+def evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height):
+    """
+    Avoid larger snakes while focusing on growth (underdog mode)
+    """
+    score = 0.0
+
+    for opponent in opponents:
+        opponent_length = len(opponent["body"])
+        opponent_head = opponent["head"]
+
+        if opponent_length > my_length:
+            # Keep distance from larger snakes
+            distance = get_distance(new_head, opponent_head)
+
+            if distance <= 2:
+                # Too close to larger snake - danger!
+                score -= 30.0
+            elif distance <= 4:
+                # Somewhat close - keep distance
+                score -= (5 - distance) * 8
+            elif distance >= 6:
+                # Good distance - safe to grow
+                score += 5.0
+
+            # Extra penalty for moving towards larger snake heads
+            current_distance = get_distance(opponent_head, {"x": new_head["x"] - (new_head["x"] - opponent_head["x"]),
+                                                             "y": new_head["y"] - (new_head["y"] - opponent_head["y"])})
+            if distance < current_distance:
+                # Moving closer to larger snake - bad idea
+                score -= 15.0
 
     return score
 
@@ -576,7 +628,17 @@ def determine_strategy(my_health, my_length, opponents, food):
     """
     if my_health < 15:
         return "🚨 CRITICAL - FOOD NOW"
-    elif my_health >= 20 and opponents and any(len(o["body"]) < my_length for o in opponents):
+
+    # Check if we're the underdog
+    all_opponents_bigger = all(len(o["body"]) > my_length for o in opponents) if opponents else False
+    any_smaller = any(len(o["body"]) < my_length for o in opponents) if opponents else False
+
+    if all_opponents_bigger:
+        if my_health >= 20:
+            return "📈 UNDERDOG - GROWING"
+        else:
+            return "🍎 UNDERDOG - SURVIVAL"
+    elif my_health >= 20 and any_smaller:
         return "⚔️ HUNTING MODE"
     elif my_health < 20:
         return "🍎 SURVIVAL MODE"
