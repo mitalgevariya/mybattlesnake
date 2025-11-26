@@ -178,9 +178,14 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
     space_score = evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height)
     score += space_score * 2.5  # Increased importance
 
-    # Factor 6: Board position (prefer center slightly)
-    position_score = evaluate_position(new_head, board_width, board_height)
-    score += position_score * 0.5
+    # Factor 6: Center control and territorial dominance
+    center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height)
+    score += center_score * 3.0  # High priority for center control
+
+    # Factor 7: Area coverage - use body to block maximum area
+    coverage_score = evaluate_area_coverage(new_head, my_body, my_length, my_health,
+                                            opponents, board_width, board_height)
+    score += coverage_score * 2.0
 
     return score
 
@@ -610,7 +615,8 @@ def evaluate_space_advanced(new_head, my_body, opponents, board_width, board_hei
 
 def evaluate_position(new_head, board_width, board_height):
     """
-    Slight preference for center positions
+    Slight preference for center positions - DEPRECATED
+    Use evaluate_center_control instead
     """
     center_x = board_width / 2
     center_y = board_height / 2
@@ -620,6 +626,190 @@ def evaluate_position(new_head, board_width, board_height):
 
     # Small bonus for being near center
     return (max_distance - distance_from_center) * 0.5
+
+
+def evaluate_center_control(new_head, my_body, my_length, board_width, board_height):
+    """
+    Strong preference for center control and territorial dominance
+    """
+    center_x = board_width / 2
+    center_y = board_height / 2
+    score = 0.0
+
+    # Distance from center (closer is better)
+    distance_from_center = abs(new_head["x"] - center_x) + abs(new_head["y"] - center_y)
+    max_distance = center_x + center_y
+
+    # Strong reward for being near center
+    center_bonus = (max_distance - distance_from_center) * 5.0
+    score += center_bonus
+
+    # Extra bonus for being IN the center (within 2 squares)
+    if distance_from_center <= 2:
+        score += 25.0
+    elif distance_from_center <= 4:
+        score += 10.0
+
+    # Penalty for being on edges
+    edge_distance = min(
+        new_head["x"],
+        new_head["y"],
+        board_width - 1 - new_head["x"],
+        board_height - 1 - new_head["y"]
+    )
+
+    if edge_distance == 0:
+        # On the wall - bad for center control
+        score -= 15.0
+    elif edge_distance == 1:
+        # One square from wall
+        score -= 8.0
+
+    # Bonus for longer snakes controlling center (more intimidating)
+    if my_length > 8 and distance_from_center <= 3:
+        score += my_length * 1.5
+
+    return score
+
+
+def evaluate_area_coverage(new_head, my_body, my_length, my_health,
+                           opponents, board_width, board_height):
+    """
+    Use body positioning to control maximum area and block opponents
+    """
+    score = 0.0
+
+    # Only focus on area control when we're healthy and have decent length
+    if my_health < 20 or my_length < 5:
+        return 0.0
+
+    # Calculate which quadrants our body covers
+    quadrants_covered = set()
+    center_x = board_width / 2
+    center_y = board_height / 2
+
+    for segment in my_body:
+        qx = 0 if segment["x"] < center_x else 1
+        qy = 0 if segment["y"] < center_y else 1
+        quadrants_covered.add((qx, qy))
+
+    # Reward covering multiple quadrants (territorial control)
+    quadrant_bonus = len(quadrants_covered) * 8.0
+    score += quadrant_bonus
+
+    # Check if new head position adds new quadrant coverage
+    new_qx = 0 if new_head["x"] < center_x else 1
+    new_qy = 0 if new_head["y"] < center_y else 1
+    new_quadrant = (new_qx, new_qy)
+
+    if new_quadrant not in quadrants_covered:
+        # Moving into new quadrant - expand territory!
+        score += 20.0
+
+    # Evaluate how our body divides the board (blocking strategy)
+    # Check if our body creates barriers that split opponent areas
+    if my_length >= 8:
+        blocking_value = evaluate_body_blocking(new_head, my_body, opponents,
+                                                board_width, board_height, center_x, center_y)
+        score += blocking_value
+
+    # Bonus for body spreading (not coiled up)
+    body_spread = calculate_body_spread(my_body, board_width, board_height)
+    score += body_spread * 3.0
+
+    return score
+
+
+def evaluate_body_blocking(new_head, my_body, opponents, board_width, board_height, center_x, center_y):
+    """
+    Score how well our body blocks and divides the board
+    """
+    score = 0.0
+
+    # Create a wall effect: body segments forming lines
+    if len(my_body) < 8:
+        return 0.0
+
+    # Check for horizontal/vertical lines in body
+    horizontal_lines = {}
+    vertical_lines = {}
+
+    for segment in my_body:
+        y = segment["y"]
+        x = segment["x"]
+
+        if y not in horizontal_lines:
+            horizontal_lines[y] = []
+        horizontal_lines[y].append(x)
+
+        if x not in vertical_lines:
+            vertical_lines[x] = []
+        vertical_lines[x].append(y)
+
+    # Reward long continuous lines (wall effect)
+    for y, x_coords in horizontal_lines.items():
+        if len(x_coords) >= 4:
+            # Long horizontal wall
+            score += len(x_coords) * 3.0
+
+    for x, y_coords in vertical_lines.items():
+        if len(y_coords) >= 4:
+            # Long vertical wall
+            score += len(y_coords) * 3.0
+
+    # Extra bonus if body crosses through center creating division
+    center_crossed = False
+    for segment in my_body:
+        if abs(segment["x"] - center_x) <= 1 or abs(segment["y"] - center_y) <= 1:
+            center_crossed = True
+            break
+
+    if center_crossed and len(my_body) >= 10:
+        score += 15.0
+
+    # Check if we're blocking opponent access to areas
+    for opponent in opponents:
+        opp_head = opponent["head"]
+
+        # See if our body is between opponent and center
+        segments_between = 0
+        for segment in my_body:
+            # Simple check: is segment between opponent and center
+            if (opp_head["x"] < segment["x"] < center_x or center_x < segment["x"] < opp_head["x"]) and \
+               (opp_head["y"] < segment["y"] < center_y or center_y < segment["y"] < opp_head["y"]):
+                segments_between += 1
+
+        if segments_between >= 3:
+            # We're forming a barrier between opponent and center
+            score += 12.0
+
+    return score
+
+
+def calculate_body_spread(my_body, board_width, board_height):
+    """
+    Calculate how spread out the body is (good for area control)
+    """
+    if len(my_body) < 4:
+        return 0.0
+
+    # Calculate bounding box of our body
+    min_x = min(seg["x"] for seg in my_body)
+    max_x = max(seg["x"] for seg in my_body)
+    min_y = min(seg["y"] for seg in my_body)
+    max_y = max(seg["y"] for seg in my_body)
+
+    # Area covered by bounding box
+    width = max_x - min_x + 1
+    height = max_y - min_y + 1
+    coverage_area = width * height
+
+    # Normalize by board size
+    board_area = board_width * board_height
+    spread_ratio = coverage_area / board_area
+
+    # Higher spread = better area control
+    return spread_ratio * 50.0
 
 
 def determine_strategy(my_health, my_length, opponents, food):
