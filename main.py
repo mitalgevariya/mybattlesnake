@@ -170,7 +170,7 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
 
     # Factor 6: Center control (only when healthy and long enough)
     if my_health >= 25 and my_length >= 5:
-        center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height)
+        center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height, opponents)
         score += center_score * 2.0
 
     # Factor 7: Area coverage (only when dominant)
@@ -621,9 +621,9 @@ def evaluate_position(new_head, board_width, board_height):
     return (max_distance - distance_from_center) * 0.5
 
 
-def evaluate_center_control(new_head, my_body, my_length, board_width, board_height):
+def evaluate_center_control(new_head, my_body, my_length, board_width, board_height, opponents=None):
     """
-    Strong preference for center control and territorial dominance
+    Smart center control: avoid opponent bodies and their next possible moves
     """
     center_x = board_width / 2
     center_y = board_height / 2
@@ -657,6 +657,42 @@ def evaluate_center_control(new_head, my_body, my_length, board_width, board_hei
     elif edge_distance == 1:
         # One square from wall
         score -= 8.0
+
+    # SAFE CENTER POSITIONING: Avoid opponent bodies and predicted moves
+    if opponents:
+        for opponent in opponents:
+            opp_head = opponent["head"]
+            opp_body = opponent["body"]
+
+            # Check proximity to opponent bodies
+            for segment in opp_body:
+                dist_to_segment = abs(new_head["x"] - segment["x"]) + abs(new_head["y"] - segment["y"])
+                if dist_to_segment <= 1:
+                    # Too close to opponent body
+                    score -= 30.0
+                elif dist_to_segment == 2:
+                    # Near opponent body
+                    score -= 10.0
+
+            # Predict where opponent might move next turn
+            opponent_next_moves = get_possible_moves(opp_head, board_width, board_height)
+            for next_pos in opponent_next_moves:
+                # If our new position is where opponent might move
+                if new_head["x"] == next_pos["x"] and new_head["y"] == next_pos["y"]:
+                    # DANGER: Opponent could move here next turn
+                    score -= 40.0
+                # If opponent might move adjacent to us
+                elif abs(new_head["x"] - next_pos["x"]) + abs(new_head["y"] - next_pos["y"]) == 1:
+                    score -= 15.0
+
+            # Extra penalty for being near opponent heads (danger zone)
+            head_distance = abs(new_head["x"] - opp_head["x"]) + abs(new_head["y"] - opp_head["y"])
+            if head_distance <= 2:
+                # Very close to opponent head - risky
+                score -= 25.0
+            elif head_distance <= 3:
+                # Somewhat close - caution
+                score -= 10.0
 
     # Bonus for longer snakes controlling center (more intimidating)
     if my_length > 8 and distance_from_center <= 3:
