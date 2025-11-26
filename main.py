@@ -69,7 +69,7 @@ def move():
             continue
 
         # STRICT SAFETY: Never move into opponent bodies
-        if check_opponent_bodies(new_head, opponents):
+        if check_opponent_bodies(new_head, opponents, food):
             continue
 
         # STRICT SAFETY: Avoid head-to-head with equal/larger snakes
@@ -321,14 +321,30 @@ def is_straight_line(body, move):
     return current_direction == move
 
 
-def check_opponent_bodies(new_head, opponents):
+def check_opponent_bodies(new_head, opponents, food=None):
     """
     Optimized: Check if move hits any opponent body
     """
     new_pos = (new_head["x"], new_head["y"])
     for opponent in opponents:
-        # Check all body segments except tail (it will move)
-        for segment in opponent["body"][:-1]:
+        body = opponent["body"]
+
+        # Default: Tail moves, so we don't check it
+        segments_to_check = body[:-1]
+
+        # BUT: If opponent is about to eat, they grow, and tail stays
+        if food:
+            opp_head = opponent["head"]
+            is_about_to_eat = False
+            for f in food:
+                if abs(opp_head["x"] - f["x"]) + abs(opp_head["y"] - f["y"]) == 1:
+                    is_about_to_eat = True
+                    break
+
+            if is_about_to_eat:
+                segments_to_check = body # Check full body including tail
+
+        for segment in segments_to_check:
             if (segment["x"], segment["y"]) == new_pos:
                 return True
     return False
