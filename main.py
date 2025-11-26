@@ -1,8 +1,12 @@
 import os
 import random
 from flask import Flask, request, jsonify
+from collections import deque
 
 app = Flask(__name__)
+
+# Cache for board center calculations
+_board_center_cache = {}
 
 
 @app.route("/")
@@ -78,36 +82,9 @@ def move():
         # Choose highest scoring move
         chosen_move = max(move_scores, key=move_scores.get)
 
-        # Step 3: FINAL SAFETY CHECK - Validate chosen move against opponent threats
-        chosen_head = get_new_head_position(my_head, chosen_move)
-        is_safe_from_larger = validate_move_against_opponents(
-            chosen_head, my_length, opponents, board_width, board_height
-        )
-
-        if not is_safe_from_larger:
-            # Chosen move is dangerous! Find alternative
-            print(f"⚠️ Move {chosen_move} blocked by larger/equal snake! Re-evaluating...")
-
-            # Remove the dangerous move and try alternatives
-            safe_alternatives = []
-            for alt_move, alt_score in sorted(move_scores.items(), key=lambda x: x[1], reverse=True):
-                if alt_move == chosen_move:
-                    continue
-                alt_head = get_new_head_position(my_head, alt_move)
-                if validate_move_against_opponents(alt_head, my_length, opponents, board_width, board_height):
-                    safe_alternatives.append((alt_move, alt_score))
-
-            if safe_alternatives:
-                # Choose best safe alternative
-                chosen_move = safe_alternatives[0][0]
-                print(f"✅ Switching to safer move: {chosen_move}")
-            else:
-                # No safe alternatives, keep original (might lose but try)
-                print(f"⚠️ No safe alternatives! Proceeding with {chosen_move} anyway")
-
         # Log strategy
         strategy = determine_strategy(my_health, my_length, opponents, food)
-        print(f"🎯 {strategy}: {chosen_move} (score: {move_scores.get(chosen_move, 0):.2f}, health: {my_health})")
+        print(f"🎯 {strategy}: {chosen_move} (score: {move_scores[chosen_move]:.2f}, health: {my_health})")
 
     return jsonify({"move": chosen_move})
 
@@ -140,116 +117,67 @@ def is_basic_safe(new_head, board_width, board_height, my_body):
     return True
 
 
-def validate_move_against_opponents(chosen_head, my_length, opponents, board_width, board_height):
-    """
-    FINAL SAFETY VALIDATION: Check if any equal/larger opponent can reach this position
-    Returns True if safe, False if dangerous
-    """
-    if not opponents:
-        return True  # No opponents, always safe
-
-    chosen_pos = (chosen_head["x"], chosen_head["y"])
-
-    for opponent in opponents:
-        opponent_head = opponent["head"]
-        opponent_length = len(opponent["body"])
-
-        # Only worry about equal or larger snakes
-        if opponent_length < my_length:
-            continue
-
-        # Get all possible next positions for this opponent
-        opponent_possible_moves = get_possible_moves(opponent_head, board_width, board_height)
-
-        # Check if opponent can reach our chosen position
-        for opp_next_pos in opponent_possible_moves:
-            if (opp_next_pos["x"], opp_next_pos["y"]) == chosen_pos:
-                # DANGER! Equal or larger opponent can move here
-                return False
-
-    return True  # No equal/larger opponents can reach this position
-
-
 def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
                   opponents, food, board_width, board_height):
     """
-    Score a move based on multiple strategic factors
+    Optimized move scoring with balanced strategic factors
     """
     score = 0.0
 
-    # Factor 1: Straight line movement bonus (save health - critical!)
-    if is_straight_line(my_body, move):
-        score += 8.0  # Strong preference to continue straight
+    # Factor 1: Straight line movement (save health)
+    if len(my_body) >= 2 and is_straight_line(my_body, move):
+        score += 6.0
 
-    # Factor 2: Avoid opponent bodies
-    body_danger = check_opponent_bodies(new_head, opponents)
-    if body_danger:
-        return -1000.0  # Instant death
+    # Factor 2: Collision avoidance (instant fail)
+    if check_opponent_bodies(new_head, opponents):
+        return -1000.0
+
+    # Pre-calculate opponent size comparisons (optimize repeated checks)
+    if opponents:
+        opp_sizes = [len(opp["body"]) for opp in opponents]
+        all_bigger = all(size > my_length for size in opp_sizes)
+        any_smaller = any(size < my_length for size in opp_sizes)
+    else:
+        all_bigger = False
+        any_smaller = False
 
     # Factor 3: Head-to-head collision strategy
     head_score = evaluate_head_to_head(new_head, my_length, opponents, board_width, board_height)
     score += head_score
 
-    # Factor 4: Dynamic strategy based on size and health
-    # Check if we're the underdog (all opponents are bigger)
-    all_opponents_bigger = all(len(opp["body"]) > my_length for opp in opponents) if opponents else False
-    any_smaller_opponent = any(len(opp["body"]) < my_length for opp in opponents) if opponents else False
-
+    # Factor 4: Adaptive strategy (streamlined)
     if my_health < 15:
-        # Critical health: MUST get food NOW regardless of size
-        food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
-        score += food_score * 5.0  # Extremely high priority
-    elif all_opponents_bigger:
-        # UNDERDOG MODE: Focus on growth to catch up
+        # CRITICAL: Food only
+        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 4.5
+    elif all_bigger:
+        # UNDERDOG: Growth focus
+        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 3.5
         if my_health >= 20:
-            # Healthy underdog: aggressive growth strategy
-            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
-            score += food_score * 4.0  # Very high priority - need to grow!
-
-            # Avoid larger snakes while growing
-            avoidance_score = evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height)
-            score += avoidance_score * 2.5
-        else:
-            # Low health underdog: careful growth
-            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
-            score += food_score * 3.0
-    elif my_health >= 20 and any_smaller_opponent:
-        # DOMINANT MODE: Enough health and we're competitive or larger
-        hunt_score = evaluate_hunting(new_head, my_length, opponents, board_width, board_height)
-        score += hunt_score * 3.0
-
-        # Try to block and control opponents
-        blocking_score = evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height)
-        score += blocking_score * 2.0
-
-        # Still look for food opportunistically but with lower priority
+            score += evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height) * 2.0
+    elif my_health >= 20 and any_smaller:
+        # DOMINANT: Hunt and control
+        score += evaluate_hunting(new_head, my_length, opponents, board_width, board_height) * 2.5
+        score += evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height) * 1.5
         if food:
-            food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
-            score += food_score * 0.5  # Low priority, only if convenient
+            score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 0.4
     else:
-        # SURVIVAL MODE: Low health (15-19) or equal size competition
-        food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
-        score += food_score * 2.0
+        # SURVIVAL: Balanced
+        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 2.0
 
-    # Factor 5: Enhanced space control - prefer less cramped areas
+    # Factor 5: Space control (critical for survival)
     space_score = evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height)
-    score += space_score * 2.5  # Increased importance
+    score += space_score * 2.0
 
-<<<<<<< HEAD
     # Factor 6: Center control (only when healthy and long enough)
     if my_health >= 25 and my_length >= 5:
-        center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height, opponents)
+        center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height)
         score += center_score * 2.0
-=======
-    # Factor 6: Center control and territorial dominance
-    center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height)
-    score += center_score * 3.0  # High priority for center control
->>>>>>> parent of 1d3b9e3 (Optimize code performance and balance strategies)
 
-    # Factor 7: Area coverage - use body to block maximum area
-    coverage_score = evaluate_area_coverage(new_head, my_body, my_length, my_health,
-                                            opponents, board_width, board_height)
-    score += coverage_score * 2.0
+    # Factor 7: Area coverage (only when dominant)
+    if my_health >= 30 and my_length >= 8:
+        coverage_score = evaluate_area_coverage(new_head, my_body, my_length, my_health,
+                                                opponents, board_width, board_height)
+        score += coverage_score * 1.5
 
     return score
 
@@ -279,12 +207,13 @@ def is_straight_line(body, move):
 
 def check_opponent_bodies(new_head, opponents):
     """
-    Check if move hits any opponent body
+    Optimized: Check if move hits any opponent body
     """
+    new_pos = (new_head["x"], new_head["y"])
     for opponent in opponents:
         # Check all body segments except tail (it will move)
         for segment in opponent["body"][:-1]:
-            if new_head["x"] == segment["x"] and new_head["y"] == segment["y"]:
+            if (segment["x"], segment["y"]) == new_pos:
                 return True
     return False
 
@@ -426,7 +355,7 @@ def evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, boa
 
             # Extra penalty for moving towards larger snake heads
             current_distance = get_distance(opponent_head, {"x": new_head["x"] - (new_head["x"] - opponent_head["x"]),
-                                                             "y": new_head["y"] - (new_head["y"] - opponent_head["y"])})
+                                                            "y": new_head["y"] - (new_head["y"] - opponent_head["y"])})
             if distance < current_distance:
                 # Moving closer to larger snake - bad idea
                 score -= 15.0
@@ -483,10 +412,10 @@ def count_reachable_space(start_pos, own_body, opponents, board_width, board_hei
     accessible = 0
     max_check = 6
     visited = set()
-    queue = [(start_pos["x"], start_pos["y"], 0)]
+    queue = deque([(start_pos["x"], start_pos["y"], 0)])
 
     while queue:
-        x, y, depth = queue.pop(0)
+        x, y, depth = queue.popleft()
 
         if depth >= max_check:
             continue
@@ -537,10 +466,10 @@ def evaluate_space(new_head, my_body, opponents, board_width, board_height):
     max_check = 4
 
     visited = set()
-    queue = [(new_head["x"], new_head["y"], 0)]
+    queue = deque([(new_head["x"], new_head["y"], 0)])
 
     while queue:
-        x, y, depth = queue.pop(0)
+        x, y, depth = queue.popleft()
 
         if depth >= max_check:
             continue
@@ -592,10 +521,10 @@ def evaluate_space_advanced(new_head, my_body, opponents, board_width, board_hei
     max_extended = 7
 
     visited = set()
-    queue = [(new_head["x"], new_head["y"], 0)]
+    queue = deque([(new_head["x"], new_head["y"], 0)])
 
     while queue:
-        x, y, depth = queue.pop(0)
+        x, y, depth = queue.popleft()
 
         if depth >= max_extended:
             continue
@@ -692,9 +621,9 @@ def evaluate_position(new_head, board_width, board_height):
     return (max_distance - distance_from_center) * 0.5
 
 
-def evaluate_center_control(new_head, my_body, my_length, board_width, board_height, opponents=None):
+def evaluate_center_control(new_head, my_body, my_length, board_width, board_height):
     """
-    Smart center control: avoid opponent bodies and their next possible moves
+    Strong preference for center control and territorial dominance
     """
     center_x = board_width / 2
     center_y = board_height / 2
@@ -728,42 +657,6 @@ def evaluate_center_control(new_head, my_body, my_length, board_width, board_hei
     elif edge_distance == 1:
         # One square from wall
         score -= 8.0
-
-    # SAFE CENTER POSITIONING: Avoid opponent bodies and predicted moves
-    if opponents:
-        for opponent in opponents:
-            opp_head = opponent["head"]
-            opp_body = opponent["body"]
-
-            # Check proximity to opponent bodies
-            for segment in opp_body:
-                dist_to_segment = abs(new_head["x"] - segment["x"]) + abs(new_head["y"] - segment["y"])
-                if dist_to_segment <= 1:
-                    # Too close to opponent body
-                    score -= 30.0
-                elif dist_to_segment == 2:
-                    # Near opponent body
-                    score -= 10.0
-
-            # Predict where opponent might move next turn
-            opponent_next_moves = get_possible_moves(opp_head, board_width, board_height)
-            for next_pos in opponent_next_moves:
-                # If our new position is where opponent might move
-                if new_head["x"] == next_pos["x"] and new_head["y"] == next_pos["y"]:
-                    # DANGER: Opponent could move here next turn
-                    score -= 40.0
-                # If opponent might move adjacent to us
-                elif abs(new_head["x"] - next_pos["x"]) + abs(new_head["y"] - next_pos["y"]) == 1:
-                    score -= 15.0
-
-            # Extra penalty for being near opponent heads (danger zone)
-            head_distance = abs(new_head["x"] - opp_head["x"]) + abs(new_head["y"] - opp_head["y"])
-            if head_distance <= 2:
-                # Very close to opponent head - risky
-                score -= 25.0
-            elif head_distance <= 3:
-                # Somewhat close - caution
-                score -= 10.0
 
     # Bonus for longer snakes controlling center (more intimidating)
     if my_length > 8 and distance_from_center <= 3:
@@ -876,7 +769,7 @@ def evaluate_body_blocking(new_head, my_body, opponents, board_width, board_heig
         for segment in my_body:
             # Simple check: is segment between opponent and center
             if (opp_head["x"] < segment["x"] < center_x or center_x < segment["x"] < opp_head["x"]) and \
-               (opp_head["y"] < segment["y"] < center_y or center_y < segment["y"] < opp_head["y"]):
+                    (opp_head["y"] < segment["y"] < center_y or center_y < segment["y"] < opp_head["y"]):
                 segments_between += 1
 
         if segments_between >= 3:
