@@ -174,23 +174,16 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
         score += food_score * 2.0
 
-    # LAYER 2: Space control - immediate safety (flood-fill check)
-    space_score = evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height)
-    score += space_score * 3.5  # Very high priority - ensures immediate safety
+    # LAYER 2: Combined space control and lookahead
+    # Uses flood-fill for immediate space + recursive lookahead for future safety
+    combined_lookahead = evaluate_combined_lookahead(new_head, my_body, opponents, board_width, board_height)
+    score += combined_lookahead * 4.0  # Very high priority - comprehensive safety analysis
 
-    # LAYER 3: Short-term lookahead - tactical planning (3 moves ahead)
-    tactical_lookahead = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3)
-    score += tactical_lookahead * 2.5  # High priority - prevents immediate traps
-
-    # LAYER 4: Long-term lookahead - strategic planning (5 moves ahead)
-    strategic_lookahead = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=5)
-    score += strategic_lookahead * 1.5  # Medium priority - long-term positioning
-
-    # Factor 5: Center control and territorial dominance
+    # LAYER 3: Center control and territorial dominance
     center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height)
     score += center_score * 2.0  # Moderate priority for center control
 
-    # Factor 6: Area coverage - use body to block maximum area
+    # LAYER 4: Area coverage - use body to block maximum area
     coverage_score = evaluate_area_coverage(new_head, my_body, my_length, my_health,
                                             opponents, board_width, board_height)
     score += coverage_score * 1.5
@@ -523,6 +516,88 @@ def evaluate_space(new_head, my_body, opponents, board_width, board_height):
 
     # More space = better
     return accessible * 2
+
+
+def evaluate_combined_lookahead(new_head, my_body, opponents, board_width, board_height):
+    """
+    Combined space control and multi-depth lookahead
+
+    Efficiently combines:
+    1. Immediate space (flood-fill for accessible squares)
+    2. Tactical safety (3 moves ahead)
+    3. Strategic planning (5 moves ahead)
+
+    Single function reduces redundant calculations
+    """
+    # Component 1: Immediate space via flood-fill (0-7 moves reachable)
+    immediate_space = count_accessible_space(new_head, my_body, opponents, board_width, board_height, max_depth=7)
+
+    # Component 2: Tactical lookahead (3 moves ahead for trap detection)
+    tactical_score = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3)
+
+    # Component 3: Strategic lookahead (5 moves ahead for positioning)
+    strategic_score = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=5)
+
+    # Weighted combination:
+    # - Immediate space: ×2.0 (must have room NOW)
+    # - Tactical: ×1.5 (avoid traps soon)
+    # - Strategic: ×0.8 (long-term advantage)
+    combined_score = (immediate_space * 2.0) + (tactical_score * 1.5) + (strategic_score * 0.8)
+
+    return combined_score
+
+
+def count_accessible_space(start_head, my_body, opponents, board_width, board_height, max_depth=7):
+    """
+    Optimized flood-fill to count accessible squares
+    Returns normalized score based on reachable area
+    """
+    from collections import deque
+
+    visited = set()
+    queue = deque([(start_head["x"], start_head["y"], 0)])
+    accessible = 0
+
+    while queue:
+        x, y, depth = queue.popleft()
+
+        if depth >= max_depth:
+            continue
+
+        if (x, y) in visited:
+            continue
+
+        if x < 0 or x >= board_width or y < 0 or y >= board_height:
+            continue
+
+        # Check if occupied by snakes
+        occupied = False
+        for segment in my_body[:-1]:  # Tail moves
+            if x == segment["x"] and y == segment["y"]:
+                occupied = True
+                break
+
+        if not occupied:
+            for opponent in opponents:
+                for segment in opponent["body"][:-1]:
+                    if x == segment["x"] and y == segment["y"]:
+                        occupied = True
+                        break
+
+        if occupied:
+            continue
+
+        visited.add((x, y))
+        accessible += 1
+
+        # Add neighbors
+        queue.append((x + 1, y, depth + 1))
+        queue.append((x - 1, y, depth + 1))
+        queue.append((x, y + 1, depth + 1))
+        queue.append((x, y - 1, depth + 1))
+
+    # Normalize: more accessible space = higher score
+    return accessible * 3.0
 
 
 def evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3, cache=None):
