@@ -237,9 +237,19 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
         opp_sizes = [len(opp["body"]) for opp in opponents]
         all_bigger = all(size > my_length for size in opp_sizes)
         any_smaller = any(size < my_length for size in opp_sizes)
+
+        # Calculate size gaps for smarter strategy
+        max_opponent_size = max(opp_sizes)
+        min_opponent_size = min(opp_sizes)
+        size_gap_from_largest = max_opponent_size - my_length
+        size_gap_from_smallest = my_length - min_opponent_size
     else:
         all_bigger = False
         any_smaller = False
+        max_opponent_size = 0
+        min_opponent_size = 0
+        size_gap_from_largest = 0
+        size_gap_from_smallest = 0
 
     # Factor 3: Head-to-head collision strategy
     head_score = evaluate_head_to_head(new_head, my_length, opponents, board_width, board_height)
@@ -248,10 +258,21 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
     # Count opponents for crowded board detection
     num_opponents = len(opponents) if opponents else 0
 
-    # Factor 4: Adaptive strategy (streamlined)
+    # Factor 4: Adaptive strategy with size-gap awareness
     if my_health < 15:
         # CRITICAL: Food only (desperate)
         score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 4.5
+    elif size_gap_from_largest >= 2:
+        # CLOSE THE GAP: We're 2+ shorter than largest snake - grow aggressively
+        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 4.0
+        if my_health >= 20:
+            score += evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height) * 2.5
+    elif size_gap_from_smallest >= 2 and my_health > 50:
+        # TOO DOMINANT: We're 2+ longer than smallest - maintain but don't grow more
+        # Focus on survival and position, avoid food unless critical
+        score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 0.2  # Very low priority
+        score += evaluate_hunting(new_head, my_length, opponents, board_width, board_height) * 2.0
+        score += evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height) * 2.5
     elif my_health > 20 and num_opponents >= 2:
         # CONSERVATIVE MODE: Multiple opponents and healthy - prioritize survival
         # Avoid food competition, focus on space and safety
@@ -270,12 +291,12 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
         if my_health >= 20:
             score += evaluate_underdog_avoidance(new_head, my_length, opponents, board_width, board_height) * 2.0
     elif my_health >= 20 and any_smaller:
-        # DOMINANT: Hunt and control
-        score += evaluate_hunting(new_head, my_length, opponents, board_width, board_height) * 2.5
+        # COMPETITIVE: Balanced approach
+        score += evaluate_hunting(new_head, my_length, opponents, board_width, board_height) * 2.0
         score += evaluate_blocking(new_head, my_length, my_health, opponents, board_width, board_height) * 1.5
         if food and num_opponents < 2:
-            # Only pursue food if not crowded
-            score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 0.4
+            # Moderate food priority to stay competitive (1-2 ahead)
+            score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 1.5
     else:
         # SURVIVAL: Balanced
         score += evaluate_food_seeking(new_head, my_head, food, opponents, my_length) * 2.0
@@ -981,25 +1002,34 @@ def determine_strategy(my_health, my_length, opponents, food):
     if my_health < 15:
         return "🚨 CRITICAL - FOOD NOW"
 
-    # Check if we're the underdog
-    all_opponents_bigger = all(len(o["body"]) > my_length for o in opponents) if opponents else False
-    any_smaller = any(len(o["body"]) < my_length for o in opponents) if opponents else False
+    # Calculate size gaps
+    if opponents:
+        opp_sizes = [len(o["body"]) for o in opponents]
+        max_opponent_size = max(opp_sizes)
+        min_opponent_size = min(opp_sizes)
+        size_gap_from_largest = max_opponent_size - my_length
+        size_gap_from_smallest = my_length - min_opponent_size
+        all_opponents_bigger = all(size > my_length for size in opp_sizes)
+        any_smaller = any(size < my_length for size in opp_sizes)
+    else:
+        return "👑 SOLO - DOMINATING"
 
-    # Conservative mode when healthy and crowded
-    if my_health > 20 and num_opponents >= 2:
+    # Size-gap based strategy
+    if size_gap_from_largest >= 2:
+        return f"📈 CLOSING GAP ({size_gap_from_largest} behind)"
+    elif size_gap_from_smallest >= 2 and my_health > 50:
+        return f"🛑 TOO LONG ({size_gap_from_smallest} ahead) - MAINTAIN"
+    elif my_health > 20 and num_opponents >= 2:
         return "🛡️ CONSERVATIVE - SURVIVAL"
-
-    if all_opponents_bigger:
+    elif all_opponents_bigger:
         if my_health >= 20:
             return "📈 UNDERDOG - GROWING"
         else:
             return "🍎 UNDERDOG - SURVIVAL"
     elif my_health >= 20 and any_smaller:
-        return "⚔️ HUNTING MODE"
+        return "⚔️ COMPETITIVE MODE"
     elif my_health < 20:
         return "🍎 SURVIVAL MODE"
-    elif not opponents:
-        return "👑 DOMINATING"
     else:
         return "🎮 EFFICIENT PLAY"
 
