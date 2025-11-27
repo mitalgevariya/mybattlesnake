@@ -13,7 +13,7 @@ def index():
     return jsonify({
         "apiversion": "1",
         "author": "BigDog",
-        "color": "#C0C0C0",
+        "color": "#e5e7eb",
         "head": "rudolph",
         "tail": "coffee"
     })
