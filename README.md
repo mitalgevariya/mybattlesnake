@@ -37,7 +37,62 @@ You should see JSON output with your snake's metadata.
 
 ## Deployment Options
 
-### Option 1: Google Cloud Platform (GCP App Engine)
+### Option 1: Google Cloud Run (Recommended)
+
+**Prerequisites:**
+- Google Cloud account
+- gcloud CLI installed ([Install guide](https://cloud.google.com/sdk/docs/install))
+- Docker installed locally (optional, for testing)
+
+**Steps:**
+
+1. Set your GCP project:
+```bash
+gcloud config set project YOUR_PROJECT_ID
+```
+
+2. Deploy to Cloud Run:
+```bash
+gcloud run deploy team11-battlesnake \
+  --source . \
+  --region us-west2 \
+  --allow-unauthenticated \
+  --platform managed \
+  --memory 512Mi \
+  --timeout 10s \
+  --max-instances 10
+```
+
+3. Get your service URL:
+```bash
+gcloud run services describe team11-battlesnake --region us-west2 --format 'value(status.url)'
+```
+
+Your Battlesnake URL will be something like: `https://team11-battlesnake-xxxxx-uw.a.run.app`
+
+**Update your snake:**
+```bash
+gcloud run deploy team11-battlesnake --source . --region us-west2
+```
+
+**View logs:**
+```bash
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=team11-battlesnake" --limit 50 --format json
+```
+
+**Test locally with Docker (optional):**
+```bash
+# Build the image
+docker build -t battlesnake:test .
+
+# Run locally on port 8080
+docker run -p 8080:8080 -e PORT=8080 battlesnake:test
+
+# Test the endpoint
+curl http://localhost:8080
+```
+
+### Option 2: Google Cloud Platform (GCP App Engine)
 
 **Prerequisites:**
 - Google Cloud account
@@ -83,7 +138,7 @@ gcloud app deploy
 gcloud app logs tail -s default
 ```
 
-### Option 2: Replit (Easiest - Recommended!)
+### Option 3: Replit (Easiest for Beginners)
 
 **Step 1: Create a Replit Account**
 - Go to [Replit](https://replit.com) and sign up/log in
@@ -108,7 +163,7 @@ gcloud app logs tail -s default
 - Copy your Repl URL from the webview panel
 - This is what you'll register at play.battlesnake.com
 
-### Option 3: Render, Railway, or Heroku
+### Option 4: Render, Railway, or Heroku
 Follow their Python deployment guides and use `gunicorn` as the web server:
 ```bash
 gunicorn main:app
