@@ -176,7 +176,8 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
 
     # LAYER 2: Combined space control and lookahead
     # Uses flood-fill for immediate space + recursive lookahead for future safety
-    combined_lookahead = evaluate_combined_lookahead(new_head, my_body, opponents, board_width, board_height)
+    # Now includes tail-space opportunity and proximity risk analysis
+    combined_lookahead = evaluate_combined_lookahead(new_head, my_body, opponents, board_width, board_height, food)
     score += combined_lookahead * 4.0  # Very high priority - comprehensive safety analysis
 
     # LAYER 3: Center control and territorial dominance
@@ -518,16 +519,16 @@ def evaluate_space(new_head, my_body, opponents, board_width, board_height):
     return accessible * 2
 
 
-def evaluate_combined_lookahead(new_head, my_body, opponents, board_width, board_height):
+def evaluate_combined_lookahead(new_head, my_body, opponents, board_width, board_height, food=None):
     """
-    Combined space control and multi-depth lookahead
+    Enhanced combined space control and multi-depth lookahead
 
-    Efficiently combines:
-    1. Immediate space (flood-fill for accessible squares)
+    Intelligently combines:
+    1. Immediate space (with tail-clearing awareness)
     2. Tactical safety (3 moves ahead)
     3. Strategic planning (5 moves ahead)
-
-    Single function reduces redundant calculations
+    4. Tail-space opportunity detection (NEW)
+    5. Opponent head proximity risk assessment (NEW)
     """
     # Component 1: Immediate space via flood-fill (0-7 moves reachable)
     immediate_space = count_accessible_space(new_head, my_body, opponents, board_width, board_height, max_depth=7)
@@ -538,13 +539,172 @@ def evaluate_combined_lookahead(new_head, my_body, opponents, board_width, board
     # Component 3: Strategic lookahead (5 moves ahead for positioning)
     strategic_score = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=5)
 
+    # Component 4: Tail-space opportunity analysis (NEW)
+    tail_space_bonus = evaluate_tail_space_opportunity(new_head, my_body, opponents, board_width, board_height, food)
+
+    # Component 5: Opponent head proximity risk (NEW)
+    proximity_penalty = evaluate_opponent_proximity_risk(new_head, opponents, immediate_space)
+
     # Weighted combination:
     # - Immediate space: ×2.0 (must have room NOW)
     # - Tactical: ×1.5 (avoid traps soon)
     # - Strategic: ×0.8 (long-term advantage)
-    combined_score = (immediate_space * 2.0) + (tactical_score * 1.5) + (strategic_score * 0.8)
+    # - Tail space: ×3.0 (smart escape route - HIGH priority)
+    # - Proximity risk: ×2.5 (avoid dangerous head-to-heads)
+    combined_score = (immediate_space * 2.0) + (tactical_score * 1.5) + (strategic_score * 0.8) + (tail_space_bonus * 3.0) - (proximity_penalty * 2.5)
 
     return combined_score
+
+
+def evaluate_tail_space_opportunity(new_head, my_body, opponents, board_width, board_height, food):
+    """
+    Evaluates if moving toward tail-blocked space is beneficial
+
+    Returns high score if:
+    - Space is currently blocked by tails
+    - Tails will clear in 2-3 moves
+    - No food nearby (tail won't grow)
+    - Opens up significant space
+    - Safer than larger but risky open areas
+    """
+    from collections import deque
+
+    score = 0.0
+
+    # Check if there's food within 2-3 moves that would prevent tail from moving
+    food_nearby = False
+    if food:
+        for f in food:
+            distance = abs(new_head["x"] - f["x"]) + abs(new_head["y"] - f["y"])
+            if distance <= 3:
+                food_nearby = True
+                break
+
+    # If food is nearby, tails might not move - less valuable
+    if food_nearby:
+        return 0.0
+
+    # Check spaces around new_head that are blocked by tails
+    tail_blocked_spaces = []
+
+    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        check_x = new_head["x"] + dx
+        check_y = new_head["y"] + dy
+
+        if not (0 <= check_x < board_width and 0 <= check_y < board_height):
+            continue
+
+        # Check if blocked by my tail
+        if my_body and len(my_body) > 0:
+            my_tail = my_body[-1]
+            if check_x == my_tail["x"] and check_y == my_tail["y"]:
+                tail_blocked_spaces.append(("my_tail", check_x, check_y))
+
+        # Check if blocked by opponent tails
+        for opponent in opponents:
+            if opponent["body"] and len(opponent["body"]) > 0:
+                opp_tail = opponent["body"][-1]
+                if check_x == opp_tail["x"] and check_y == opp_tail["y"]:
+                    tail_blocked_spaces.append(("opp_tail", check_x, check_y))
+
+    # For each tail-blocked space, simulate what happens when tail moves
+    for tail_type, tx, ty in tail_blocked_spaces:
+        # Simulate flood-fill from that tail position after it clears
+        cleared_space = simulate_space_after_tail_clears(tx, ty, my_body, opponents, board_width, board_height)
+
+        # If clearing the tail opens up significant space (> 15 squares)
+        if cleared_space > 15:
+            score += 30.0  # Good opportunity!
+        elif cleared_space > 8:
+            score += 15.0  # Decent opportunity
+
+    return score
+
+
+def simulate_space_after_tail_clears(tx, ty, my_body, opponents, board_width, board_height):
+    """
+    Simulates how much space becomes available after a tail moves
+    """
+    from collections import deque
+
+    visited = set()
+    queue = deque([(tx, ty, 0)])
+    accessible = 0
+    max_depth = 5
+
+    while queue:
+        x, y, depth = queue.popleft()
+
+        if depth >= max_depth:
+            continue
+
+        if (x, y) in visited:
+            continue
+
+        if x < 0 or x >= board_width or y < 0 or y >= board_height:
+            continue
+
+        # Check if occupied by snake bodies (excluding tails since they'll move)
+        occupied = False
+        for segment in my_body[:-1]:  # Exclude tail
+            if x == segment["x"] and y == segment["y"]:
+                occupied = True
+                break
+
+        if not occupied:
+            for opponent in opponents:
+                for segment in opponent["body"][:-1]:  # Exclude tail
+                    if x == segment["x"] and y == segment["y"]:
+                        occupied = True
+                        break
+
+        if occupied:
+            continue
+
+        visited.add((x, y))
+        accessible += 1
+
+        queue.append((x + 1, y, depth + 1))
+        queue.append((x - 1, y, depth + 1))
+        queue.append((x, y + 1, depth + 1))
+        queue.append((x, y - 1, depth + 1))
+
+    return accessible
+
+
+def evaluate_opponent_proximity_risk(new_head, opponents, immediate_space):
+    """
+    Evaluates risk of moving near opponent heads when space is limited
+
+    Returns high penalty if:
+    - Opponent heads are within 2-3 squares
+    - Immediate space is low (< 20 squares)
+    - Creates potential head-to-head scenarios
+    - Alternative paths exist with more space
+    """
+    risk = 0.0
+
+    # If we have plenty of space, proximity is less risky
+    if immediate_space > 60:
+        return 0.0
+
+    for opponent in opponents:
+        opp_head = opponent["head"]
+        distance = abs(new_head["x"] - opp_head["x"]) + abs(new_head["y"] - opp_head["y"])
+
+        # Close proximity to opponent head
+        if distance <= 2:
+            # Very close and limited space = HIGH RISK
+            if immediate_space < 20:
+                risk += 40.0  # Severe penalty
+            elif immediate_space < 40:
+                risk += 20.0  # Moderate penalty
+        elif distance == 3:
+            # Somewhat close
+            if immediate_space < 20:
+                risk += 15.0  # Moderate penalty
+
+    return risk
 
 
 def count_accessible_space(start_head, my_body, opponents, board_width, board_height, max_depth=7):
