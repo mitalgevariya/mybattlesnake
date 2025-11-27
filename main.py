@@ -174,22 +174,26 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
         score += food_score * 2.0
 
-    # Factor 5: Lookahead - avoid dead ends by checking future moves
-    lookahead_score = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3)
-    score += lookahead_score * 3.0  # High priority - prevents getting trapped
-
-    # Factor 6: Enhanced space control - prefer less cramped areas
+    # LAYER 2: Space control - immediate safety (flood-fill check)
     space_score = evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height)
-    score += space_score * 2.5  # Increased importance
+    score += space_score * 3.5  # Very high priority - ensures immediate safety
 
-    # Factor 6: Center control and territorial dominance
+    # LAYER 3: Short-term lookahead - tactical planning (3 moves ahead)
+    tactical_lookahead = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3)
+    score += tactical_lookahead * 2.5  # High priority - prevents immediate traps
+
+    # LAYER 4: Long-term lookahead - strategic planning (5 moves ahead)
+    strategic_lookahead = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=5)
+    score += strategic_lookahead * 1.5  # Medium priority - long-term positioning
+
+    # Factor 5: Center control and territorial dominance
     center_score = evaluate_center_control(new_head, my_body, my_length, board_width, board_height)
-    score += center_score * 3.0  # High priority for center control
+    score += center_score * 2.0  # Moderate priority for center control
 
-    # Factor 7: Area coverage - use body to block maximum area
+    # Factor 6: Area coverage - use body to block maximum area
     coverage_score = evaluate_area_coverage(new_head, my_body, my_length, my_health,
                                             opponents, board_width, board_height)
-    score += coverage_score * 2.0
+    score += coverage_score * 1.5
 
     return score
 
@@ -521,13 +525,24 @@ def evaluate_space(new_head, my_body, opponents, board_width, board_height):
     return accessible * 2
 
 
-def evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3):
+def evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3, cache=None):
     """
     Lookahead function: Simulates future moves to check if path leads to dead-end
     Returns the number of safe moves available before getting trapped
+
+    Optimized with memoization for depth=5 performance
     """
     if depth == 0:
         return 0
+
+    # Initialize cache on first call
+    if cache is None:
+        cache = {}
+
+    # Create cache key from position and depth
+    cache_key = (new_head["x"], new_head["y"], depth, len(my_body))
+    if cache_key in cache:
+        return cache[cache_key]
 
     # Simulate moving to new_head position
     simulated_body = [dict(new_head)] + my_body[:-1]  # Add new head, remove tail
@@ -552,16 +567,18 @@ def evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, 
         # Recursively check if this path continues to be safe
         if depth > 1:
             future_safe = evaluate_lookahead(next_pos, simulated_body, opponents,
-                                            board_width, board_height, depth - 1)
+                                            board_width, board_height, depth - 1, cache)
             future_scores.append(future_safe)
 
     # Score based on:
-    # 1. Number of immediate safe moves
-    # 2. Average safety of future paths
+    # 1. Number of immediate safe moves (weight: 10)
+    # 2. Average safety of future paths (weight: 1)
     immediate_score = safe_moves * 10
     future_score = sum(future_scores) / len(future_scores) if future_scores else 0
 
-    return immediate_score + future_score
+    result = immediate_score + future_score
+    cache[cache_key] = result
+    return result
 
 
 def evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height):
