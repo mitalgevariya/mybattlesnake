@@ -189,6 +189,11 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
                                             opponents, board_width, board_height)
     score += coverage_score * 1.5
 
+    # LAYER 5: Active trapping - trap smaller/equal snakes when strong
+    trapping_score = evaluate_active_trapping(new_head, my_body, my_length, my_health,
+                                              opponents, board_width, board_height)
+    score += trapping_score * 3.5  # High priority when conditions are met
+
     return score
 
 
@@ -412,6 +417,161 @@ def evaluate_blocking(new_head, my_length, my_health, opponents, board_width, bo
                 score += 15.0
 
     return score
+
+
+def evaluate_active_trapping(new_head, my_body, my_length, my_health, opponents, board_width, board_height):
+    """
+    Actively trap smaller or equal-length snakes when we have enough health and length
+
+    Strategy:
+    1. Only trap when health > 30 and length > 5 (we're strong enough)
+    2. Target smaller or equal-length snakes only
+    3. Cut off their escape routes by positioning between them and open space
+    4. Force them into corners or tight spaces
+    5. NEVER engage head-to-head with longer snakes during trapping
+    """
+    score = 0.0
+
+    # Only trap when we're in strong position
+    if my_health <= 30 or my_length <= 5:
+        return 0.0
+
+    for opponent in opponents:
+        opponent_head = opponent["head"]
+        opponent_body = opponent["body"]
+        opponent_length = len(opponent_body)
+
+        # Only trap smaller or equal-length snakes
+        if opponent_length > my_length:
+            continue
+
+        # Calculate opponent's available space (how trapped they already are)
+        opp_available_space = count_accessible_space(opponent_head, opponent_body, opponents,
+                                                     board_width, board_height, max_depth=7)
+
+        # Calculate our distance to opponent
+        distance_to_opponent = get_distance(new_head, opponent_head)
+
+        # TRAPPING CONDITION 1: Opponent is already cramped (< 30 accessible squares)
+        if opp_available_space < 30:
+            # They're in trouble! Get closer to cut off more escape routes
+            if distance_to_opponent <= 3:
+                # Close enough to apply pressure
+                score += (4 - distance_to_opponent) * 25.0
+
+                # Extra bonus if we can block their best escape route
+                blocking_bonus = evaluate_escape_route_blocking(new_head, my_body, opponent,
+                                                               board_width, board_height)
+                score += blocking_bonus
+
+        # TRAPPING CONDITION 2: Opponent is near edges/corners
+        edge_distance = min(
+            opponent_head["x"],
+            opponent_head["y"],
+            board_width - 1 - opponent_head["x"],
+            board_height - 1 - opponent_head["y"]
+        )
+
+        if edge_distance <= 2:
+            # Opponent is near edge - opportunity to trap!
+            if distance_to_opponent <= 4:
+                # Position to cut off their retreat from edge
+                score += (5 - distance_to_opponent) * 15.0
+
+                # Bonus if we're between them and center
+                center_x = board_width / 2
+                center_y = board_height / 2
+                if is_between_points(new_head, opponent_head,
+                                    {"x": center_x, "y": center_y}):
+                    score += 30.0  # Cutting off their escape!
+
+        # TRAPPING CONDITION 3: We're bigger - apply hunting pressure
+        if opponent_length < my_length:
+            # We're bigger, they should fear us
+            if distance_to_opponent <= 3:
+                # Close enough to hunt
+                score += (4 - distance_to_opponent) * 20.0
+
+                # Extra pressure if they have limited moves
+                opp_safe_moves = count_safe_moves(opponent_head, opponent_body, opponents,
+                                                  board_width, board_height)
+                if opp_safe_moves <= 2:
+                    # They're running out of options!
+                    score += 40.0
+
+        # SAFETY CHECK: Avoid head-to-head even when trapping
+        # Check if any of opponent's possible moves overlap with our new position
+        opp_possible_moves = get_possible_moves(opponent_head, board_width, board_height)
+        for opp_move in opp_possible_moves:
+            if new_head["x"] == opp_move["x"] and new_head["y"] == opp_move["y"]:
+                # Potential head-to-head
+                if opponent_length >= my_length:
+                    # Equal or longer - ABORT TRAPPING
+                    return -500.0  # Strong penalty to override trapping bonus
+                elif opponent_length == my_length - 1:
+                    # Almost equal - be cautious
+                    score -= 50.0  # Reduce enthusiasm
+
+    return score
+
+
+def evaluate_escape_route_blocking(new_head, my_body, opponent, board_width, board_height):
+    """
+    Score how well this position blocks opponent's best escape routes
+    """
+    score = 0.0
+    opponent_head = opponent["head"]
+
+    # Get all opponent's possible moves
+    opp_moves = get_possible_moves(opponent_head, board_width, board_height)
+
+    # For each possible opponent move, check if we're blocking it
+    for opp_move in opp_moves:
+        distance_to_their_move = get_distance(new_head, opp_move)
+
+        # If we're adjacent to where they want to go
+        if distance_to_their_move <= 1:
+            score += 15.0
+        elif distance_to_their_move == 2:
+            score += 5.0
+
+    return score
+
+
+def is_between_points(check_point, point_a, point_b):
+    """
+    Check if check_point is roughly between point_a and point_b
+    """
+    # Simple heuristic: check if moving from A to check_point to B
+    # is roughly same distance as A to B directly
+    dist_a_to_check = get_distance(point_a, check_point)
+    dist_check_to_b = get_distance(check_point, point_b)
+    dist_a_to_b = get_distance(point_a, point_b)
+
+    # If sum of segments is close to direct distance, we're between them
+    return (dist_a_to_check + dist_check_to_b) <= (dist_a_to_b + 2)
+
+
+def count_safe_moves(head, body, opponents, board_width, board_height):
+    """
+    Count how many safe moves a snake has from current position
+    """
+    safe_count = 0
+
+    for direction in ["up", "down", "left", "right"]:
+        new_pos = get_new_head_position(head, direction)
+
+        # Check basic safety
+        if not is_basic_safe(new_pos, board_width, board_height, body):
+            continue
+
+        # Check opponent bodies
+        if check_opponent_bodies(new_pos, opponents):
+            continue
+
+        safe_count += 1
+
+    return safe_count
 
 
 def count_reachable_space(start_pos, own_body, opponents, board_width, board_height, exclude_length):
@@ -1121,6 +1281,19 @@ def determine_strategy(my_health, my_length, opponents, food):
     # Check if we're the underdog
     all_opponents_bigger = all(len(o["body"]) > my_length for o in opponents) if opponents else False
     any_smaller = any(len(o["body"]) < my_length for o in opponents) if opponents else False
+    any_equal = any(len(o["body"]) == my_length for o in opponents) if opponents else False
+
+    # Check for trapping opportunities
+    if my_health > 30 and my_length > 5 and (any_smaller or any_equal):
+        # Check if any opponent is cramped
+        for opponent in opponents:
+            if len(opponent["body"]) <= my_length:
+                opp_head = opponent["head"]
+                # Simple edge check
+                edge_dist = min(opp_head["x"], opp_head["y"],
+                               10 - opp_head["x"], 10 - opp_head["y"])  # Assume 11x11 board
+                if edge_dist <= 2:
+                    return "🕸️ TRAPPING MODE"
 
     if all_opponents_bigger:
         if my_health >= 20:
