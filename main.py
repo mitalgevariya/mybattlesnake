@@ -174,7 +174,11 @@ def evaluate_move(move, new_head, my_head, my_body, my_length, my_health,
         food_score = evaluate_food_seeking(new_head, my_head, food, opponents, my_length)
         score += food_score * 2.0
 
-    # Factor 5: Enhanced space control - prefer less cramped areas
+    # Factor 5: Lookahead - avoid dead ends by checking future moves
+    lookahead_score = evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3)
+    score += lookahead_score * 3.0  # High priority - prevents getting trapped
+
+    # Factor 6: Enhanced space control - prefer less cramped areas
     space_score = evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height)
     score += space_score * 2.5  # Increased importance
 
@@ -515,6 +519,49 @@ def evaluate_space(new_head, my_body, opponents, board_width, board_height):
 
     # More space = better
     return accessible * 2
+
+
+def evaluate_lookahead(new_head, my_body, opponents, board_width, board_height, depth=3):
+    """
+    Lookahead function: Simulates future moves to check if path leads to dead-end
+    Returns the number of safe moves available before getting trapped
+    """
+    if depth == 0:
+        return 0
+
+    # Simulate moving to new_head position
+    simulated_body = [dict(new_head)] + my_body[:-1]  # Add new head, remove tail
+
+    # Count safe next moves from this position
+    safe_moves = 0
+    future_scores = []
+
+    for direction in ["up", "down", "left", "right"]:
+        next_pos = get_new_head_position(new_head, direction)
+
+        # Check if this next move is safe
+        if not is_basic_safe(next_pos, board_width, board_height, simulated_body, None):
+            continue
+
+        # Check against opponents
+        if check_opponent_bodies(next_pos, opponents, None):
+            continue
+
+        safe_moves += 1
+
+        # Recursively check if this path continues to be safe
+        if depth > 1:
+            future_safe = evaluate_lookahead(next_pos, simulated_body, opponents,
+                                            board_width, board_height, depth - 1)
+            future_scores.append(future_safe)
+
+    # Score based on:
+    # 1. Number of immediate safe moves
+    # 2. Average safety of future paths
+    immediate_score = safe_moves * 10
+    future_score = sum(future_scores) / len(future_scores) if future_scores else 0
+
+    return immediate_score + future_score
 
 
 def evaluate_space_advanced(new_head, my_body, opponents, board_width, board_height):
