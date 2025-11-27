@@ -228,7 +228,7 @@ def check_opponent_bodies(new_head, opponents):
 
 def evaluate_head_to_head(new_head, my_length, opponents, board_width, board_height):
     """
-    Aggressive head-to-head strategy: seek smaller snakes, avoid larger ones
+    Strategic head-to-head: engage equal/smaller, avoid only larger snakes
     """
     score = 0.0
 
@@ -246,14 +246,14 @@ def evaluate_head_to_head(new_head, my_length, opponents, board_width, board_hei
                     # We're bigger! GO FOR THE KILL
                     score += 50.0
                 elif my_length == opponent_length:
-                    # Equal size: avoid (both die)
-                    score -= 100.0
+                    # Equal size: 50/50 chance - TAKE THE RISK
+                    score += 10.0  # Slight positive to be aggressive
                 else:
-                    # They're bigger: RUN AWAY
-                    score -= 200.0
+                    # They're bigger: AVOID AT ALL COSTS
+                    return -1000.0  # Instant fail - never risk larger snakes
 
-        # Also score proximity to smaller snake heads (hunting)
-        if my_length > opponent_length:
+        # Also score proximity to smaller/equal snake heads (hunting)
+        if my_length >= opponent_length:
             distance_to_opp = get_distance(new_head, opponent_head)
             if distance_to_opp < 3:
                 score += (3 - distance_to_opp) * 10  # Get closer to hunt
